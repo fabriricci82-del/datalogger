@@ -17,7 +17,7 @@ jobs:
           channel: 'stable'
       - name: Crea la parte Android del progetto
         run: flutter create --platforms=android --org it.datalogger9 --project-name datalogger9 .
-      - name: Permessi Bluetooth
+      - name: Configura Android, Permessi e Repository Gradle
         run: |
           python3 - <<'PY'
           p = 'android/app/src/main/AndroidManifest.xml'
@@ -30,6 +30,17 @@ jobs:
               <uses-feature android:name="android.hardware.bluetooth_le" android:required="true" />
               """
           open(p, 'w').write(s.replace('<application', perms + '<application', 1))
+
+          g = 'android/app/build.gradle.kts'
+          gs = open(g).read()
+          gs = gs.replace('ndkVersion = flutter.ndkVersion', 'ndkVersion = "27.0.12077973"')
+          gs = gs.replace('minSdk = flutter.minSdkVersion', 'minSdk = 21')
+          open(g, 'w').write(gs)
+
+          st = 'android/settings.gradle.kts'
+          sts = open(st).read()
+          sts = sts.replace('gradlePluginPortal()', 'mavenCentral()\n        google()\n        gradlePluginPortal()')
+          open(st, 'w').write(sts)
           PY
       - run: flutter pub get
       - run: flutter build apk --release

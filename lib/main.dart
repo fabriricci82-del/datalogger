@@ -13,6 +13,7 @@ import 'package:share_plus/share_plus.dart';
 
 final Guid kSvc = Guid('6e400001-b5a3-f393-e0a9-e50e24dcca9e');
 final Guid kCmd = Guid('6e400002-b5a3-f393-e0a9-e50e24dcca9e');
+final Guid kWtCmd = Guid('0000ffe9-0000-1000-8000-00805f9a34fb');
 final Guid kChr = Guid('6e400003-b5a3-f393-e0a9-e50e24dcca9e');
 final Guid kFil = Guid('6e400004-b5a3-f393-e0a9-e50e24dcca9e');
 final Guid kWtSvc = Guid('0000ffe5-0000-1000-8000-00805f9a34fb');
@@ -123,6 +124,8 @@ class _HomePageState extends State<HomePage> {
   final List<int> wtCount = [0, 0];
   final List<String> wtRaw = ['', ''];
       final List<int?> wtBat = [null, null];
+    final List<BluetoothCharacteristic?> wtCmdC = [null, null];
+
 
   Timer? directTimer;
 
@@ -239,35 +242,35 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  Future<void> attachWt(int i, BluetoothDevice d) async {
+   Future<void> attachWt(int i, BluetoothDevice d) async {
     await d.connect();
     d.connectionState.listen((st) {
       if (st == BluetoothConnectionState.disconnected && mounted) setState(() => wtLive[i] = false);
     });
     final services = await d.discoverServices();
-      for (final sv in services) {
+    for (final sv in services) {
       for (final c in sv.characteristics) {
         if (sv.uuid == kWtSvc && c.properties.notify) {
           await c.setNotifyValue(true);
           d.cancelWhenDisconnected(c.onValueReceived.listen((v) => onWt(i, v)));
         }
-        if (sv.uuid == kBatSvc && c.uuid == kBatChr) {
-          if (c.properties.read) {
-            final val = await c.read();
-            if (val.isNotEmpty && mounted) setState(() => wtBat[i] = val.first);
-          }
-          if (c.properties.notify) {
-            await c.setNotifyValue(true);
-            d.cancelWhenDisconnected(c.onValueReceived.listen((val) {
-              if (val.isNotEmpty && mounted) setState(() => wtBat[i] = val.first);
-            }));
-          }
+        if (sv.uuid == kWtSvc && c.uuid == kWtCmd) {
+          wtCmdC[i] = c;
         }
       }
     }
-
     wtDev[i] = d;
     wtLive[i] = true;
+    await reqWtBat(i);
+  }
+
+  Future<void> reqWtBat(int i) async {
+    final c = wtCmdC[i];
+    if (c != null) {
+      try {
+        await c.write([0xFF, 0xAA, 0x27, 0x64, 0x00], withoutResponse: c.properties.writeWithoutResponse);
+      } catch (_) {}
+    }
   }
 
   int s16(int lo, int hi) => ((hi << 8) | lo).toSigned(16);
@@ -295,12 +298,14 @@ class _HomePageState extends State<HomePage> {
           last[base + 6 + k] = s16(fr[14 + 2 * k], fr[15 + 2 * k]) / 32768.0 * 180;
         }
         wtCount[i]++;
-      } else if (f == 0x51 || f == 0x52 || f == 0x53) {
-        final scale = f == 0x51 ? 16.0 : f == 0x52 ? 2000.0 : 180.0;
-        final off = f == 0x51 ? 0 : f == 0x52 ? 3 : 6;
-        for (int k = 0; k < 3; k++) {
-          last[base + off + k] = s16(fr[2 + 2 * k], fr[3 + 2 * k]) / 32768.0 * scale;
+       } else if (f == 0x71 && fr.length >= 6 && fr.elementAt(2) == 0x64) {
+        final rawV = s16(fr.elementAt(4), fr.elementAt(5));
+        final volts = rawV / 100.0;
+        if (volts > 2.5 && volts < 5.0 && mounted) {
+          setState(() => wtBat[i] = batPct(volts));
         }
+      }
+
         wtCount[i]++;
       }
     }
@@ -518,13 +523,14 @@ class _HomePageState extends State<HomePage> {
     final b = n == 1 ? 17 : 26;
     String f(int i, int dp) => last[b + i].toStringAsFixed(dp);
     return ListView(padding: const EdgeInsets.all(12), children: [
-      ListTile(
+          ListTile(
         title: Text('WT9011DCL $n'),
         subtitle: directMode
-            ? Text('Batteria: ${wtBat[n - 1] != null ? '${wtBat[n - 1]}%' : 'non disponibile'}')
+            ? Text('Batteria: ${wtBat[n - 1] != null ? '${wtBat[n - 1]}% (tocca per aggiornare)' : 'lettura... (tocca)'}')
             : null,
+        onTap: directMode ? () => reqWtBat(n - 1) : null,
         trailing: Text(on ? 'connesso' : 'non connesso', style: TextStyle(color: on ? Colors.green : Colors.red)),
-      ),
+      ),  
 
       if (directMode)
         Text('Frame ricevuti: ${wtCount[n - 1]}  ultimo pacchetto: ${wtRaw[n - 1]}', style: const TextStyle(fontSize: 11)),

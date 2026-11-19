@@ -12,6 +12,7 @@ dependencies:
   flutter_blue_plus: any
   path_provider: any
   share_plus: any
+  permission_handler: any
 
 dev_dependencies:
   flutter_test:
@@ -19,3 +20,4 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
+

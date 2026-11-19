@@ -15,7 +15,9 @@ final Guid kSvc = Guid('6e400001-b5a3-f393-e0a9-e50e24dcca9e');
 final Guid kCmd = Guid('6e400002-b5a3-f393-e0a9-e50e24dcca9e');
 final Guid kChr = Guid('6e400003-b5a3-f393-e0a9-e50e24dcca9e');
 final Guid kFil = Guid('6e400004-b5a3-f393-e0a9-e50e24dcca9e');
-final Guid kWtSvc = Guid('0000ffe5-0000-1000-8000-00805f9a34fb'); // WitMotion BLE
+final Guid kWtSvc = Guid('0000ffe5-0000-1000-8000-00805f9a34fb');
+final Guid kBatSvc = Guid('0000180f-0000-1000-8000-00805f9a34fb');
+final Guid kBatChr = Guid('00002a19-0000-1000-8000-00805f9a34fb');// WitMotion BLE
 
 const int kLen = 148; // t(4) + 35 float + flags(1) + flags2(1) + pad(2)
 const int kMax = 1800; // 3 minuti a 10 pacchetti al secondo
@@ -120,6 +122,8 @@ class _HomePageState extends State<HomePage> {
   final List<List<int>> wtBuf = [<int>[], <int>[]];
   final List<int> wtCount = [0, 0];
   final List<String> wtRaw = ['', ''];
+      final List<int?> wtBat = [null, null];
+
   Timer? directTimer;
 
   @override
@@ -241,14 +245,27 @@ class _HomePageState extends State<HomePage> {
       if (st == BluetoothConnectionState.disconnected && mounted) setState(() => wtLive[i] = false);
     });
     final services = await d.discoverServices();
-    for (final sv in services) {
+      for (final sv in services) {
       for (final c in sv.characteristics) {
         if (sv.uuid == kWtSvc && c.properties.notify) {
           await c.setNotifyValue(true);
           d.cancelWhenDisconnected(c.onValueReceived.listen((v) => onWt(i, v)));
         }
+        if (sv.uuid == kBatSvc && c.uuid == kBatChr) {
+          if (c.properties.read) {
+            final val = await c.read();
+            if (val.isNotEmpty && mounted) setState(() => wtBat[i] = val.first);
+          }
+          if (c.properties.notify) {
+            await c.setNotifyValue(true);
+            d.cancelWhenDisconnected(c.onValueReceived.listen((val) {
+              if (val.isNotEmpty && mounted) setState(() => wtBat[i] = val.first);
+            }));
+          }
+        }
       }
     }
+
     wtDev[i] = d;
     wtLive[i] = true;
   }
@@ -503,8 +520,12 @@ class _HomePageState extends State<HomePage> {
     return ListView(padding: const EdgeInsets.all(12), children: [
       ListTile(
         title: Text('WT9011DCL $n'),
+        subtitle: directMode
+            ? Text('Batteria: ${wtBat[n - 1] != null ? '${wtBat[n - 1]}%' : 'non disponibile'}')
+            : null,
         trailing: Text(on ? 'connesso' : 'non connesso', style: TextStyle(color: on ? Colors.green : Colors.red)),
       ),
+
       if (directMode)
         Text('Frame ricevuti: ${wtCount[n - 1]}  ultimo pacchetto: ${wtRaw[n - 1]}', style: const TextStyle(fontSize: 11)),
       grid([

@@ -558,8 +558,8 @@ class _HomePageState extends State<HomePage> {
   }
 
   Widget toolsTab() {
-      final rngLabels =;
-    final rateOpts =; 
+        final rngLabels = List<int>.of({2, 4, 8, 16});
+    final rateOpts = List<int>.of({100, 200, 500, 1000});
     return ListView(padding: const EdgeInsets.all(12), children: [
       const Text('Orologio e calibrazione'),
       Wrap(spacing: 8, children: [

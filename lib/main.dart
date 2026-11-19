@@ -1,5 +1,4 @@
 // Datalogger 9 assi - app Flutter (Android)
-// Legge via Bluetooth il sensore costruito e, tramite lui, i due WitMotion WT9011DCL.
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -13,15 +12,13 @@ import 'package:share_plus/share_plus.dart';
 
 final Guid kSvc = Guid('6e400001-b5a3-f393-e0a9-e50e24dcca9e');
 final Guid kCmd = Guid('6e400002-b5a3-f393-e0a9-e50e24dcca9e');
-final Guid kWtCmd = Guid('0000ffe9-0000-1000-8000-00805f9a34fb');
 final Guid kChr = Guid('6e400003-b5a3-f393-e0a9-e50e24dcca9e');
 final Guid kFil = Guid('6e400004-b5a3-f393-e0a9-e50e24dcca9e');
 final Guid kWtSvc = Guid('0000ffe5-0000-1000-8000-00805f9a34fb');
-final Guid kBatSvc = Guid('0000180f-0000-1000-8000-00805f9a34fb');
-final Guid kBatChr = Guid('00002a19-0000-1000-8000-00805f9a34fb');// WitMotion BLE
+final Guid kWtCmd = Guid('0000ffe9-0000-1000-8000-00805f9a34fb');
 
-const int kLen = 148; // t(4) + 35 float + flags(1) + flags2(1) + pad(2)
-const int kMax = 1800; // 3 minuti a 10 pacchetti al secondo
+const int kLen = 148;
+const int kMax = 1800;
 const String kHdr =
     'ms,ax,ay,az,gx,gy,gz,mx,my,mz,tempC,hPa,vibRMS,roll,pitch,yaw,batV,fHz,'
     'wt1_ax,wt1_ay,wt1_az,wt1_gx,wt1_gy,wt1_gz,wt1_roll,wt1_pitch,wt1_yaw,'
@@ -51,24 +48,24 @@ class ChartDef {
   const ChartDef(this.title, this.idx, this.names, {this.dp = 2, this.rel = false});
 }
 
-const List<ChartDef> sensorCharts = [
-  ChartDef('Accelerazione (g)', [0, 1, 2], ['X', 'Y', 'Z']),
-  ChartDef('Giroscopio (°/s)', [3, 4, 5], ['X', 'Y', 'Z'], dp: 1),
-  ChartDef('Magnetometro (µT)', [6, 7, 8], ['X', 'Y', 'Z'], dp: 1),
-  ChartDef('Orientamento (°)', [12, 13, 14], ['Roll', 'Pitch', 'Yaw'], dp: 1),
-  ChartDef('Temperatura (°C)', [9], [''], dp: 1),
-  ChartDef('Pressione (hPa)', [10], [''], dp: 1),
-  ChartDef('Quota relativa (m)', [35], [''], dp: 1, rel: true),
-  ChartDef('Vibrazione RMS (g)', [11], [''], dp: 3),
-  ChartDef('Frequenza dominante (Hz)', [16], [''], dp: 0),
+final List<ChartDef> sensorCharts = [
+  ChartDef('Accelerazione (g)', List.generate(3, (i) => i), const ['X', 'Y', 'Z']),
+  ChartDef('Giroscopio (°/s)', List.generate(3, (i) => i + 3), const ['X', 'Y', 'Z'], dp: 1),
+  ChartDef('Magnetometro (µT)', List.generate(3, (i) => i + 6), const ['X', 'Y', 'Z'], dp: 1),
+  ChartDef('Orientamento (°)', List.generate(3, (i) => i + 12), const ['Roll', 'Pitch', 'Yaw'], dp: 1),
+  ChartDef('Temperatura (°C)', List.filled(1, 9), const [''], dp: 1),
+  ChartDef('Pressione (hPa)', List.filled(1, 10), const [''], dp: 1),
+  ChartDef('Quota relativa (m)', List.filled(1, 35), const [''], dp: 1, rel: true),
+  ChartDef('Vibrazione RMS (g)', List.filled(1, 11), const [''], dp: 3),
+  ChartDef('Frequenza dominante (Hz)', List.filled(1, 16), const [''], dp: 0),
 ];
 
 List<ChartDef> wtCharts(int n) {
   final b = n == 1 ? 17 : 26;
   return [
-    ChartDef('WT$n accelerazione (g)', [b, b + 1, b + 2], ['X', 'Y', 'Z']),
-    ChartDef('WT$n giroscopio (°/s)', [b + 3, b + 4, b + 5], ['X', 'Y', 'Z'], dp: 1),
-    ChartDef('WT$n angoli (°)', [b + 6, b + 7, b + 8], ['Roll', 'Pitch', 'Yaw'], dp: 1),
+    ChartDef('WT$n accelerazione (g)', [b, b + 1, b + 2], const ['X', 'Y', 'Z']),
+    ChartDef('WT$n giroscopio (°/s)', [b + 3, b + 4, b + 5], const ['X', 'Y', 'Z'], dp: 1),
+    ChartDef('WT$n angoli (°)', [b + 6, b + 7, b + 8], const ['Roll', 'Pitch', 'Yaw'], dp: 1),
   ];
 }
 
@@ -77,15 +74,16 @@ int batPct(double v) {
     [3.3, 0.0], [3.5, 5.0], [3.7, 20.0], [3.8, 45.0],
     [3.9, 65.0], [4.0, 80.0], [4.1, 92.0], [4.2, 100.0],
   ];
-  if (v <= t[0][0]) return 0;
+  if (v <= t.first.first) return 0;
   for (int i = 1; i < t.length; i++) {
-    if (v <= t[i][0]) {
-      return (t[i - 1][1] + (t[i][1] - t[i - 1][1]) * (v - t[i - 1][0]) / (t[i][0] - t[i - 1][0])).round();
+    final prev = t.elementAt(i - 1);
+    final curr = t.elementAt(i);
+    if (v <= curr.first) {
+      return (prev.last + (curr.last - prev.last) * (v - prev.first) / (curr.first - prev.first)).round();
     }
   }
   return 100;
 }
-
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
   @override
@@ -116,17 +114,15 @@ class _HomePageState extends State<HomePage> {
   int rng = 3;
   int rate = 200;
   double shock = 3;
-  // WitMotion collegati direttamente al telefono
+
   bool directMode = false;
-  final List<bool> wtLive = [false, false];
-  final List<BluetoothDevice?> wtDev = [null, null];
+  final List<bool> wtLive = List<bool>.filled(2, false);
+  final List<BluetoothDevice?> wtDev = List<BluetoothDevice?>.filled(2, null);
+  final List<BluetoothCharacteristic?> wtCmdC = List<BluetoothCharacteristic?>.filled(2, null);
   final List<List<int>> wtBuf = [<int>[], <int>[]];
-  final List<int> wtCount = [0, 0];
-  final List<String> wtRaw = ['', ''];
-      final List<int?> wtBat = [null, null];
-    final List<BluetoothCharacteristic?> wtCmdC = [null, null];
-
-
+  final List<int> wtCount = List<int>.filled(2, 0);
+  final List<String> wtRaw = List<String>.filled(2, '');
+  final List<int?> wtBat = List<int?>.filled(2, null);
   Timer? directTimer;
 
   @override
@@ -145,7 +141,6 @@ class _HomePageState extends State<HomePage> {
     super.dispose();
   }
 
-  // ---------- Bluetooth ----------
   Future<void> connectDev() async {
     setState(() => status = 'Ricerca…');
     try {
@@ -202,12 +197,12 @@ class _HomePageState extends State<HomePage> {
     directTimer?.cancel();
     setState(() {
       directMode = false;
-      wtLive[0] = false;
-      wtLive[1] = false;
+      wtLive.fillRange(0, 2, false);
+      wtCmdC.fillRange(0, 2, null);
+      wtBat.fillRange(0, 2, null);
     });
   }
 
-  // ---------- WitMotion collegato direttamente al telefono ----------
   Future<void> connectWtDirect() async {
     setState(() => status = 'Ricerca WitMotion…');
     try {
@@ -227,7 +222,7 @@ class _HomePageState extends State<HomePage> {
         return;
       }
       for (int i = 0; i < found.length && i < 2; i++) {
-        await attachWt(i, found[i]);
+        await attachWt(i, found.elementAt(i));
       }
       directMode = true;
       directTimer?.cancel();
@@ -242,10 +237,12 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-   Future<void> attachWt(int i, BluetoothDevice d) async {
+  Future<void> attachWt(int i, BluetoothDevice d) async {
     await d.connect();
     d.connectionState.listen((st) {
-      if (st == BluetoothConnectionState.disconnected && mounted) setState(() => wtLive[i] = false);
+      if (st == BluetoothConnectionState.disconnected && mounted) {
+        setState(() => wtLive[i] = false);
+      }
     });
     final services = await d.discoverServices();
     for (final sv in services) {
@@ -265,59 +262,61 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<void> reqWtBat(int i) async {
-    final c = wtCmdC[i];
+    final c = wtCmdC.elementAt(i);
     if (c != null) {
       try {
         await c.write([0xFF, 0xAA, 0x27, 0x64, 0x00], withoutResponse: c.properties.writeWithoutResponse);
       } catch (_) {}
     }
   }
-
   int s16(int lo, int hi) => ((hi << 8) | lo).toSigned(16);
 
-  // Pacchetti WitMotion: 0x55 0x61 (20 byte: acc, giro, angoli) oppure 0x55 0x51/0x52/0x53 (11 byte)
   void onWt(int i, List<int> v) {
     wtRaw[i] = v.map((b) => b.toRadixString(16).padLeft(2, '0')).join(' ');
-    final b = wtBuf[i];
+    final b = wtBuf.elementAt(i);
     b.addAll(v);
     final base = i == 0 ? 17 : 26;
     while (b.length >= 2) {
-      if (b[0] != 0x55) {
+      if (b.first != 0x55) {
         b.removeAt(0);
         continue;
       }
-      final f = b[1];
+      final f = b.elementAt(1);
       final need = f == 0x61 ? 20 : 11;
       if (b.length < need) break;
       final fr = List<int>.from(b.sublist(0, need));
       b.removeRange(0, need);
       if (f == 0x61) {
         for (int k = 0; k < 3; k++) {
-          last[base + k] = s16(fr[2 + 2 * k], fr[3 + 2 * k]) / 32768.0 * 16;
-          last[base + 3 + k] = s16(fr[8 + 2 * k], fr[9 + 2 * k]) / 32768.0 * 2000;
-          last[base + 6 + k] = s16(fr[14 + 2 * k], fr[15 + 2 * k]) / 32768.0 * 180;
+          last[base + k] = s16(fr.elementAt(2 + 2 * k), fr.elementAt(3 + 2 * k)) / 32768.0 * 16;
+          last[base + 3 + k] = s16(fr.elementAt(8 + 2 * k), fr.elementAt(9 + 2 * k)) / 32768.0 * 2000;
+          last[base + 6 + k] = s16(fr.elementAt(14 + 2 * k), fr.elementAt(15 + 2 * k)) / 32768.0 * 180;
         }
         wtCount[i]++;
-       } else if (f == 0x71 && fr.length >= 6 && fr.elementAt(2) == 0x64) {
+      } else if (f == 0x51 || f == 0x52 || f == 0x53) {
+        final scale = f == 0x51 ? 16.0 : f == 0x52 ? 2000.0 : 180.0;
+        final off = f == 0x51 ? 0 : f == 0x52 ? 3 : 6;
+        for (int k = 0; k < 3; k++) {
+          last[base + off + k] = s16(fr.elementAt(2 + 2 * k), fr.elementAt(3 + 2 * k)) / 32768.0 * scale;
+        }
+        wtCount[i]++;
+      } else if (f == 0x71 && fr.length >= 6 && fr.elementAt(2) == 0x64) {
         final rawV = s16(fr.elementAt(4), fr.elementAt(5));
         final volts = rawV / 100.0;
         if (volts > 2.5 && volts < 5.0 && mounted) {
           setState(() => wtBat[i] = batPct(volts));
         }
       }
-
-        wtCount[i]++;
-      }
     }
   }
 
   void onPkt(List<int> d) {
     if (d.isEmpty) return;
-    final q = d[0];
+    final q = d.first;
     if (q == 0) got = 0;
     if (q * 19 != got) return;
     for (int i = 1; i < d.length && got < kLen; i++) {
-      asm[got++] = d[i];
+      asm[got++] = d.elementAt(i);
     }
     if (got >= kLen) parse();
   }
@@ -328,12 +327,12 @@ class _HomePageState extends State<HomePage> {
     for (int i = 0; i < 35; i++) {
       v.add(bd.getFloat32(4 + i * 4, Endian.little));
     }
-    final ab = 44330.0 * (1 - math.pow(v[10] / 1013.25, 0.1903));
+    final ab = 44330.0 * (1 - math.pow(v.elementAt(10) / 1013.25, 0.1903));
     alt0 ??= ab;
     lastAbs = ab;
     v.add(ab);
-    flags = asm[144];
-    flags2 = asm[145];
+    flags = asm.elementAt(144);
+    flags2 = asm.elementAt(145);
     if ((flags & 8) != 0 && (prevFlags & 8) == 0) shocks++;
     prevFlags = flags;
     buf.add(v);
@@ -343,7 +342,7 @@ class _HomePageState extends State<HomePage> {
       final t = bd.getUint32(0, Endian.little);
       final row = <String>[t.toString()];
       for (int i = 0; i < 35; i++) {
-        row.add(v[i].toStringAsFixed(3));
+        row.add(v.elementAt(i).toStringAsFixed(3));
       }
       row.add((ab - alt0!).toStringAsFixed(2));
       rec.add(row.join(','));
@@ -359,7 +358,7 @@ class _HomePageState extends State<HomePage> {
   }
 
   void onFile(List<int> d) {
-    if (d.length == 1 && d[0] == 4) {
+    if (d.length == 1 && d.first == 4) {
       endFile();
       return;
     }
@@ -406,7 +405,6 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  // ---------- interfaccia ----------
   List<List<double>> windowData() {
     final n = windowSec * 10;
     return buf.length <= n ? buf : buf.sublist(buf.length - n);
@@ -439,9 +437,11 @@ class _HomePageState extends State<HomePage> {
     final off = d.rel ? (alt0 ?? 0) : 0.0;
     final spans = <TextSpan>[];
     for (int j = 0; j < d.idx.length; j++) {
+      final colIdx = d.idx.length > 1 ? j : 2;
+      final valIdx = d.idx.elementAt(j);
       spans.add(TextSpan(
-        text: '${d.names[j]} ${(last[d.idx[j]] - off).toStringAsFixed(d.dp)}  ',
-        style: TextStyle(color: LinePainter.cols[d.idx.length > 1 ? j : 2], fontSize: 12),
+        text: '${d.names.elementAt(j)} ${(last.elementAt(valIdx) - off).toStringAsFixed(d.dp)}  ',
+        style: TextStyle(color: LinePainter.cols.elementAt(colIdx), fontSize: 12),
       ));
     }
     return Card(
@@ -465,33 +465,41 @@ class _HomePageState extends State<HomePage> {
   }
 
   Widget windowBar() {
+    final winOpts = List<int>.generate(6, (i) => (i + 1) * 30);
     return Row(children: [
       const Text('Finestra: '),
       DropdownButton<int>(
         value: windowSec,
-        items: const [10, 30, 60, 120, 180]
-            .map((s) => DropdownMenuItem(value: s, child: Text('$s s')))
-            .toList(),
+        items: winOpts.map((s) => DropdownMenuItem(value: s, child: Text('$s s'))).toList(),
         onChanged: (v) => setState(() => windowSec = v ?? 30),
       ),
       const Spacer(),
       TextButton(onPressed: () => setState(() => alt0 = lastAbs), child: const Text('Azzera quota')),
     ]);
   }
-
   Widget sensorTab() {
     final sdOk = (flags & 4) != 0;
     final logging = (flags & 1) != 0;
-    final bv = last[15];
+    final bv = last.elementAt(15);
     final batt = bv < 1 ? 'non misurata' : '${batPct(bv)}% (${bv.toStringAsFixed(2)} V)';
     return ListView(padding: const EdgeInsets.all(12), children: [
-      if (shocks > 0) Card(color: Colors.red.shade700, child: ListTile(title: Text('Urti rilevati: $shocks', style: const TextStyle(color: Colors.white)), trailing: TextButton(onPressed: () => setState(() => shocks = 0), child: const Text('Azzera', style: TextStyle(color: Colors.white))))),
+      if (shocks > 0)
+        Card(
+          color: Colors.red.shade700,
+          child: ListTile(
+            title: Text('Urti rilevati: $shocks', style: const TextStyle(color: Colors.white)),
+            trailing: TextButton(
+              onPressed: () => setState(() => shocks = 0),
+              child: const Text('Azzera', style: TextStyle(color: Colors.white)),
+            ),
+          ),
+        ),
       if ((flags & 32) != 0) const Card(child: ListTile(title: Text('Batteria scarica: ricarica il sensore'))),
       grid([
-        metric('Temperatura', '${last[9].toStringAsFixed(1)} °C'),
-        metric('Pressione', '${last[10].toStringAsFixed(1)} hPa'),
+        metric('Temperatura', '${last.elementAt(9).toStringAsFixed(1)} °C'),
+        metric('Pressione', '${last.elementAt(10).toStringAsFixed(1)} hPa'),
         metric('Batteria', batt),
-        metric('Quota relativa', '${(last[35] - (alt0 ?? 0)).toStringAsFixed(1)} m'),
+        metric('Quota relativa', '${(last.elementAt(35) - (alt0 ?? 0)).toStringAsFixed(1)} m'),
       ]),
       Card(
         child: Padding(
@@ -501,9 +509,12 @@ class _HomePageState extends State<HomePage> {
             Text(!sdOk ? 'microSD non rilevata' : logging ? 'In registrazione' : 'Ferma',
                 style: TextStyle(fontWeight: FontWeight.w500, color: logging ? Colors.red : null)),
             Row(children: [
-              FilledButton.tonal(onPressed: connected && sdOk && !logging ? () => tx([1]) : null, child: const Text('Avvia')),
+              FilledButton.tonal(
+                  onPressed: connected && sdOk && !logging ? () => tx(List.filled(1, 0)) : null,
+                  child: const Text('Avvia')),
               const SizedBox(width: 8),
-              FilledButton.tonal(onPressed: connected && logging ? () => tx([0]) : null, child: const Text('Ferma')),
+              FilledButton.tonal(
+                  onPressed: connected && logging ? () => tx(List.filled(1, 1)) : null, child: const Text('Ferma')),
               const Spacer(),
               const Text('Auto'),
               Switch(value: (flags & 2) != 0, onChanged: connected ? (v) => tx([v ? 2 : 3]) : null),
@@ -519,21 +530,23 @@ class _HomePageState extends State<HomePage> {
   }
 
   Widget wtTab(int n) {
-    final on = directMode ? wtLive[n - 1] : (n == 1 ? (flags & 128) != 0 : (flags2 & 1) != 0);
+    final idx = n - 1;
+    final on = directMode ? wtLive.elementAt(idx) : (n == 1 ? (flags & 128) != 0 : (flags2 & 1) != 0);
     final b = n == 1 ? 17 : 26;
-    String f(int i, int dp) => last[b + i].toStringAsFixed(dp);
+    final batVal = wtBat.elementAt(idx);
+    String f(int i, int dp) => last.elementAt(b + i).toStringAsFixed(dp);
     return ListView(padding: const EdgeInsets.all(12), children: [
-          ListTile(
+      ListTile(
         title: Text('WT9011DCL $n'),
         subtitle: directMode
-            ? Text('Batteria: ${wtBat[n - 1] != null ? '${wtBat[n - 1]}% (tocca per aggiornare)' : 'lettura... (tocca)'}')
+            ? Text('Batteria: ${batVal != null ? '$batVal% (tocca per aggiornare)' : 'lettura... (tocca)'}')
             : null,
-        onTap: directMode ? () => reqWtBat(n - 1) : null,
+        onTap: directMode ? () => reqWtBat(idx) : null,
         trailing: Text(on ? 'connesso' : 'non connesso', style: TextStyle(color: on ? Colors.green : Colors.red)),
-      ),  
-
+      ),
       if (directMode)
-        Text('Frame ricevuti: ${wtCount[n - 1]}  ultimo pacchetto: ${wtRaw[n - 1]}', style: const TextStyle(fontSize: 11)),
+        Text('Frame ricevuti: ${wtCount.elementAt(idx)}  ultimo pacchetto: ${wtRaw.elementAt(idx)}',
+            style: const TextStyle(fontSize: 11)),
       grid([
         metric('Acc X (g)', f(0, 2)), metric('Acc Y (g)', f(1, 2)), metric('Acc Z (g)', f(2, 2)),
         metric('Giro X (°/s)', f(3, 1)), metric('Giro Y (°/s)', f(4, 1)), metric('Giro Z (°/s)', f(5, 1)),
@@ -545,13 +558,17 @@ class _HomePageState extends State<HomePage> {
   }
 
   Widget toolsTab() {
+    final rngLabels =;
+    final rateOpts =;
     return ListView(padding: const EdgeInsets.all(12), children: [
       const Text('Orologio e calibrazione'),
       Wrap(spacing: 8, children: [
         OutlinedButton(onPressed: connected ? setClock : null, child: const Text('Imposta orologio')),
-        OutlinedButton(onPressed: connected ? () => tx([5]) : null, child: const Text('Calibra accel/giro')),
-        OutlinedButton(onPressed: connected ? () => tx([6]) : null, child: const Text('Calibra magnetometro')),
-        OutlinedButton(onPressed: connected ? () => tx([11]) : null, child: const Text('Dimentica sensori WT')),
+        OutlinedButton(onPressed: connected ? () => tx(List.filled(1, 5)) : null, child: const Text('Calibra accel/giro')),
+        OutlinedButton(
+            onPressed: connected ? () => tx(List.filled(1, 6)) : null, child: const Text('Calibra magnetometro')),
+        OutlinedButton(
+            onPressed: connected ? () => tx(List.filled(1, 9)) : null, child: const Text('Dimentica sensori WT')),
       ]),
       const Text('Accel/giro: sensore fermo e in piano. Magnetometro: ruotalo per 15 s.', style: TextStyle(fontSize: 12)),
       (flags & 64) != 0 ? const Text('Calibrazione in corso…') : const SizedBox.shrink(),
@@ -560,13 +577,13 @@ class _HomePageState extends State<HomePage> {
       Row(children: [
         DropdownButton<int>(
           value: rng,
-          items: const [0, 1, 2, 3].map((i) => DropdownMenuItem(value: i, child: Text('±${[2, 4, 8, 16][i]} g'))).toList(),
+          items: List.generate(4, (i) => DropdownMenuItem(value: i, child: Text('±${rngLabels.elementAt(i)} g'))),
           onChanged: (v) => setState(() => rng = v ?? 3),
         ),
         const SizedBox(width: 16),
         DropdownButton<int>(
           value: rate,
-          items: const [100, 200, 500, 1000].map((r) => DropdownMenuItem(value: r, child: Text('$r Hz'))).toList(),
+          items: rateOpts.map((r) => DropdownMenuItem(value: r, child: Text('$r Hz'))).toList(),
           onChanged: (v) => setState(() => rate = v ?? 200),
         ),
       ]),
@@ -588,7 +605,7 @@ class _HomePageState extends State<HomePage> {
             ? () {
                 fmode = 'list';
                 fbytes.clear();
-                tx([7]);
+                tx(List.filled(1, 7));
               }
             : null,
         child: const Text('Leggi elenco'),
@@ -596,16 +613,16 @@ class _HomePageState extends State<HomePage> {
       for (final r in files)
         ListTile(
           dense: true,
-          title: Text(r[0]),
-          subtitle: Text(r.length > 1 ? '${(int.tryParse(r[1]) ?? 0) ~/ 1024} KB' : ''),
+          title: Text(r.first),
+          subtitle: Text(r.length > 1 ? '${(int.tryParse(r.elementAt(1)) ?? 0) ~/ 1024} KB' : ''),
           trailing: TextButton(
             child: const Text('Scarica'),
             onPressed: () {
               fmode = 'file';
-              fcur = r[0];
+              fcur = r.first;
               fbytes.clear();
               setState(() => fprog = '$fcur: 0 byte');
-              tx([8, ...r[0].codeUnits]);
+              tx([8, ...r.first.codeUnits]);
             },
           ),
         ),
@@ -614,7 +631,8 @@ class _HomePageState extends State<HomePage> {
       const Divider(),
       const Text('Registrazione sul telefono (10 campioni/s)'),
       Row(children: [
-        FilledButton.tonal(onPressed: connected ? toggleRecPhone : null, child: Text(recOn ? 'Ferma e condividi' : 'Avvia')),
+        FilledButton.tonal(
+            onPressed: connected ? toggleRecPhone : null, child: Text(recOn ? 'Ferma e condividi' : 'Avvia')),
         const SizedBox(width: 12),
         Text('${rec.length} campioni'),
       ]),
@@ -676,7 +694,7 @@ class LinePainter extends CustomPainter {
     double lo = double.infinity, hi = -double.infinity;
     for (final r in data) {
       for (final k in idx) {
-        final v = r[k] - off;
+        final v = r.elementAt(k) - off;
         lo = math.min(lo, v);
         hi = math.max(hi, v);
       }
@@ -689,14 +707,17 @@ class LinePainter extends CustomPainter {
     lo -= pad;
     hi += pad;
     for (int j = 0; j < idx.length; j++) {
+      final colIdx = idx.length > 1 ? j : 2;
       final p = Paint()
         ..style = PaintingStyle.stroke
         ..strokeWidth = 1.6
-        ..color = cols[idx.length > 1 ? j : 2];
+        ..color = cols.elementAt(colIdx);
       final path = Path();
       for (int i = 0; i < data.length; i++) {
+        final row = data.elementAt(i);
+        final valIdx = idx.elementAt(j);
         final x = s.width * (i / (data.length - 1));
-        final y = s.height - (data[i][idx[j]] - off - lo) / (hi - lo) * s.height;
+        final y = s.height - (row.elementAt(valIdx) - off - lo) / (hi - lo) * s.height;
         if (i == 0) {
           path.moveTo(x, y);
         } else {
@@ -708,15 +729,13 @@ class LinePainter extends CustomPainter {
     label(c, hi.toStringAsFixed(1), const Offset(3, 2));
     label(c, lo.toStringAsFixed(1), Offset(3, s.height - 14));
   }
-
-  void label(Canvas c, String t, Offset o) {
-    final tp = TextPainter(
-      text: TextSpan(text: t, style: TextStyle(fontSize: 10, color: textColor)),
-      textDirection: TextDirection.ltr,
-    )..layout();
-    tp.paint(c, o);
-  }
-
-  @override
-  bool shouldRepaint(covariant LinePainter old) => true;
+void label(Canvas c, String t, Offset o) {
+final tp = TextPainter(
+text: TextSpan(text: t, style: TextStyle(fontSize: 10, color: textColor)),
+textDirection: TextDirection.ltr,
+)..layout();
+tp.paint(c, o);
+}
+@override
+bool shouldRepaint(covariant LinePainter old) => true;
 }

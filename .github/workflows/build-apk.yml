@@ -13,7 +13,8 @@ jobs:
           java-version: 17
       - uses: subosito/flutter-action@v2
         with:
-          channel: stable
+          flutter-version: '3.29.0'
+          channel: 'stable'
       - name: Crea la parte Android del progetto
         run: flutter create --platforms=android --org it.datalogger9 --project-name datalogger9 .
       - name: Permessi Bluetooth

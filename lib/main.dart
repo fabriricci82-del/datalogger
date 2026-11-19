@@ -9,6 +9,7 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'package:share_plus/share_plus.dart';
 
 final Guid kSvc = Guid('6e400001-b5a3-f393-e0a9-e50e24dcca9e');
@@ -118,7 +119,7 @@ class _HomePageState extends State<HomePage> {
   final List<bool> wtLive = [false, false];
   final List<BluetoothDevice?> wtDev = [null, null];
   final List<List<int>> wtBuf = [<int>[], <int>[]];
-  final List<int> wtCount = [0, 0];
+  final List<int> wtCount =;
   final List<String> wtRaw = ['', ''];
   Timer? directTimer;
 
@@ -138,8 +139,26 @@ class _HomePageState extends State<HomePage> {
     super.dispose();
   }
 
+  Future<bool> checkPerms() async {
+    if (Platform.isAndroid) {
+      final statuses = await [
+        Permission.bluetoothScan,
+        Permission.bluetoothConnect,
+        Permission.locationWhenInUse,
+      ].request();
+      final ok = statuses[Permission.bluetoothScan]?.isGranted == true &&
+          statuses[Permission.bluetoothConnect]?.isGranted == true;
+      if (!ok) {
+        setState(() => status = 'Permessi Bluetooth negati');
+        return false;
+      }
+    }
+    return true;
+  }
+
   // ---------- Bluetooth ----------
   Future<void> connectDev() async {
+    if (!await checkPerms()) return;
     setState(() => status = 'Ricerca…');
     try {
       BluetoothDevice? found;
@@ -154,7 +173,7 @@ class _HomePageState extends State<HomePage> {
         return;
       }
       final d = found!;
-      await d.connect();
+      await d.connect(license: License.free);
       d.connectionState.listen((s) {
         if (s == BluetoothConnectionState.disconnected && mounted) {
           setState(() {
@@ -202,6 +221,7 @@ class _HomePageState extends State<HomePage> {
 
   // ---------- WitMotion collegato direttamente al telefono ----------
   Future<void> connectWtDirect() async {
+    if (!await checkPerms()) return;
     setState(() => status = 'Ricerca WitMotion…');
     try {
       final found = <BluetoothDevice>[];
@@ -236,7 +256,7 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<void> attachWt(int i, BluetoothDevice d) async {
-    await d.connect();
+    await d.connect(license: License.free);
     d.connectionState.listen((st) {
       if (st == BluetoothConnectionState.disconnected && mounted) setState(() => wtLive[i] = false);
     });
@@ -275,421 +295,399 @@ class _HomePageState extends State<HomePage> {
         for (int k = 0; k < 3; k++) {
           last[base + k] = s16(fr[2 + 2 * k], fr[3 + 2 * k]) / 32768.0 * 16;
           last[base + 3 + k] = s16(fr[8 + 2 * k], fr[9 + 2 * k]) / 32768.0 * 2000;
-          last[base + 6 + k] = s16(fr[14 + 2 * k], fr[15 + 2 * k]) / 32768.0 * 180;
-        }
-        wtCount[i]++;
-      } else if (f == 0x51 || f == 0x52 || f == 0x53) {
-        final scale = f == 0x51 ? 16.0 : f == 0x52 ? 2000.0 : 180.0;
-        final off = f == 0x51 ? 0 : f == 0x52 ? 3 : 6;
-        for (int k = 0; k < 3; k++) {
-          last[base + off + k] = s16(fr[2 + 2 * k], fr[3 + 2 * k]) / 32768.0 * scale;
-        }
-        wtCount[i]++;
-      }
-    }
-  }
-
-  void onPkt(List<int> d) {
-    if (d.isEmpty) return;
-    final q = d[0];
-    if (q == 0) got = 0;
-    if (q * 19 != got) return;
-    for (int i = 1; i < d.length && got < kLen; i++) {
-      asm[got++] = d[i];
-    }
-    if (got >= kLen) parse();
-  }
-
-  void parse() {
-    final bd = ByteData.sublistView(asm);
-    final v = <double>[];
-    for (int i = 0; i < 35; i++) {
-      v.add(bd.getFloat32(4 + i * 4, Endian.little));
-    }
-    final ab = 44330.0 * (1 - math.pow(v[10] / 1013.25, 0.1903));
-    alt0 ??= ab;
-    lastAbs = ab;
-    v.add(ab);
-    flags = asm[144];
-    flags2 = asm[145];
-    if ((flags & 8) != 0 && (prevFlags & 8) == 0) shocks++;
-    prevFlags = flags;
-    buf.add(v);
-    if (buf.length > kMax) buf.removeAt(0);
-    last = v;
-    if (recOn) {
-      final t = bd.getUint32(0, Endian.little);
-      final row = <String>[t.toString()];
-      for (int i = 0; i < 35; i++) {
-        row.add(v[i].toStringAsFixed(3));
-      }
-      row.add((ab - alt0!).toStringAsFixed(2));
-      rec.add(row.join(','));
-    }
-  }
-
-  Future<void> tx(List<int> b) async {
-    try {
-      await cmdC?.write(b);
-    } catch (e) {
-      setState(() => status = 'Errore comando: $e');
-    }
-  }
-
-  void onFile(List<int> d) {
-    if (d.length == 1 && d[0] == 4) {
-      endFile();
-      return;
-    }
-    fbytes.addAll(d);
-    if (fmode == 'file') setState(() => fprog = '$fcur: ${fbytes.length} byte');
-  }
-
-  Future<void> endFile() async {
-    final txt = utf8.decode(fbytes, allowMalformed: true);
-    final m = fmode;
-    fmode = '';
-    if (m == 'list') {
-      final rows = txt.trim().split('\n').where((l) => l.isNotEmpty).map((l) => l.split(',')).toList();
-      setState(() => files = rows);
-    } else if (m == 'file') {
-      await saveShare(fcur, txt);
-      setState(() => fprog = '$fcur: salvato');
-    }
-  }
-
-  Future<void> saveShare(String name, String text) async {
-    final dir = await getTemporaryDirectory();
-    final f = File('${dir.path}/$name');
-    await f.writeAsString(text);
-    await Share.shareXFiles([XFile(f.path)]);
-  }
-
-  Future<void> setClock() async {
-    final now = DateTime.now();
-    final e = now.millisecondsSinceEpoch ~/ 1000 + now.timeZoneOffset.inSeconds;
-    await tx([4, e & 255, (e >> 8) & 255, (e >> 16) & 255, (e >> 24) & 255]);
-  }
-
-  Future<void> toggleRecPhone() async {
-    if (!recOn) {
-      rec.clear();
-      setState(() => recOn = true);
-    } else {
-      setState(() => recOn = false);
-      if (rec.isNotEmpty) {
-        final ts = DateTime.now().millisecondsSinceEpoch;
-        await saveShare('sessione_$ts.csv', '$kHdr\n${rec.join('\n')}');
-      }
-    }
-  }
-
-  // ---------- interfaccia ----------
-  List<List<double>> windowData() {
-    final n = windowSec * 10;
-    return buf.length <= n ? buf : buf.sublist(buf.length - n);
-  }
-
-  Widget metric(String label, String value) {
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(10),
-        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Text(label, style: Theme.of(context).textTheme.bodySmall),
-          const SizedBox(height: 2),
-          Text(value, style: Theme.of(context).textTheme.titleMedium),
-        ]),
-      ),
-    );
-  }
-
-  Widget grid(List<Widget> items) {
-    return GridView.count(
-      crossAxisCount: 2,
-      shrinkWrap: true,
-      physics: const NeverScrollableScrollPhysics(),
-      childAspectRatio: 2.4,
-      children: items,
-    );
-  }
-
-  Widget chart(ChartDef d) {
-    final off = d.rel ? (alt0 ?? 0) : 0.0;
-    final spans = <TextSpan>[];
-    for (int j = 0; j < d.idx.length; j++) {
-      spans.add(TextSpan(
-        text: '${d.names[j]} ${(last[d.idx[j]] - off).toStringAsFixed(d.dp)}  ',
-        style: TextStyle(color: LinePainter.cols[d.idx.length > 1 ? j : 2], fontSize: 12),
-      ));
-    }
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(10),
-        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Text(d.title, style: Theme.of(context).textTheme.bodySmall),
-          Text.rich(TextSpan(children: spans)),
-          const SizedBox(height: 4),
-          SizedBox(
-            height: 110,
-            child: CustomPaint(
-              size: Size.infinite,
-              painter: LinePainter(windowData(), d.idx, off, Theme.of(context).colorScheme.outline,
-                  Theme.of(context).colorScheme.onSurfaceVariant),
-            ),
-          ),
-        ]),
-      ),
-    );
-  }
-
-  Widget windowBar() {
-    return Row(children: [
-      const Text('Finestra: '),
-      DropdownButton<int>(
-        value: windowSec,
-        items: const [10, 30, 60, 120, 180]
-            .map((s) => DropdownMenuItem(value: s, child: Text('$s s')))
-            .toList(),
-        onChanged: (v) => setState(() => windowSec = v ?? 30),
-      ),
-      const Spacer(),
-      TextButton(onPressed: () => setState(() => alt0 = lastAbs), child: const Text('Azzera quota')),
-    ]);
-  }
-
-  Widget sensorTab() {
-    final sdOk = (flags & 4) != 0;
-    final logging = (flags & 1) != 0;
-    final bv = last[15];
-    final batt = bv < 1 ? 'non misurata' : '${batPct(bv)}% (${bv.toStringAsFixed(2)} V)';
-    return ListView(padding: const EdgeInsets.all(12), children: [
-      if (shocks > 0) Card(color: Colors.red.shade700, child: ListTile(title: Text('Urti rilevati: $shocks', style: const TextStyle(color: Colors.white)), trailing: TextButton(onPressed: () => setState(() => shocks = 0), child: const Text('Azzera', style: TextStyle(color: Colors.white))))),
-      if ((flags & 32) != 0) const Card(child: ListTile(title: Text('Batteria scarica: ricarica il sensore'))),
-      grid([
-        metric('Temperatura', '${last[9].toStringAsFixed(1)} °C'),
-        metric('Pressione', '${last[10].toStringAsFixed(1)} hPa'),
-        metric('Batteria', batt),
-        metric('Quota relativa', '${(last[35] - (alt0 ?? 0)).toStringAsFixed(1)} m'),
-      ]),
-      Card(
-        child: Padding(
-          padding: const EdgeInsets.all(10),
-          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            const Text('Registrazione su microSD'),
-            Text(!sdOk ? 'microSD non rilevata' : logging ? 'In registrazione' : 'Ferma',
-                style: TextStyle(fontWeight: FontWeight.w500, color: logging ? Colors.red : null)),
-            Row(children: [
-              FilledButton.tonal(onPressed: connected && sdOk && !logging ? () => tx([1]) : null, child: const Text('Avvia')),
-              const SizedBox(width: 8),
-              FilledButton.tonal(onPressed: connected && logging ? () => tx([0]) : null, child: const Text('Ferma')),
-              const Spacer(),
-              const Text('Auto'),
-              Switch(value: (flags & 2) != 0, onChanged: connected ? (v) => tx([v ? 2 : 3]) : null),
-            ]),
-            const Text('Il pulsante BOOT o il touch sul sensore avviano e fermano la registrazione anche senza telefono.',
-                style: TextStyle(fontSize: 12)),
-          ]),
-        ),
-      ),
-      windowBar(),
-      for (final d in sensorCharts) chart(d),
-    ]);
-  }
-
-  Widget wtTab(int n) {
-    final on = directMode ? wtLive[n - 1] : (n == 1 ? (flags & 128) != 0 : (flags2 & 1) != 0);
-    final b = n == 1 ? 17 : 26;
-    String f(int i, int dp) => last[b + i].toStringAsFixed(dp);
-    return ListView(padding: const EdgeInsets.all(12), children: [
-      ListTile(
-        title: Text('WT9011DCL $n'),
-        trailing: Text(on ? 'connesso' : 'non connesso', style: TextStyle(color: on ? Colors.green : Colors.red)),
-      ),
-      if (directMode)
-        Text('Frame ricevuti: ${wtCount[n - 1]}  ultimo pacchetto: ${wtRaw[n - 1]}', style: const TextStyle(fontSize: 11)),
-      grid([
-        metric('Acc X (g)', f(0, 2)), metric('Acc Y (g)', f(1, 2)), metric('Acc Z (g)', f(2, 2)),
-        metric('Giro X (°/s)', f(3, 1)), metric('Giro Y (°/s)', f(4, 1)), metric('Giro Z (°/s)', f(5, 1)),
-        metric('Roll (°)', f(6, 1)), metric('Pitch (°)', f(7, 1)), metric('Yaw (°)', f(8, 1)),
-      ]),
-      windowBar(),
-      for (final d in wtCharts(n)) chart(d),
-    ]);
-  }
-
-  Widget toolsTab() {
-    return ListView(padding: const EdgeInsets.all(12), children: [
-      const Text('Orologio e calibrazione'),
-      Wrap(spacing: 8, children: [
-        OutlinedButton(onPressed: connected ? setClock : null, child: const Text('Imposta orologio')),
-        OutlinedButton(onPressed: connected ? () => tx([5]) : null, child: const Text('Calibra accel/giro')),
-        OutlinedButton(onPressed: connected ? () => tx([6]) : null, child: const Text('Calibra magnetometro')),
-        OutlinedButton(onPressed: connected ? () => tx([11]) : null, child: const Text('Dimentica sensori WT')),
-      ]),
-      const Text('Accel/giro: sensore fermo e in piano. Magnetometro: ruotalo per 15 s.', style: TextStyle(fontSize: 12)),
-      (flags & 64) != 0 ? const Text('Calibrazione in corso…') : const SizedBox.shrink(),
-      const Divider(),
-      const Text('Parametri del sensore'),
-      Row(children: [
-        DropdownButton<int>(
-          value: rng,
-          items: const [0, 1, 2, 3].map((i) => DropdownMenuItem(value: i, child: Text('±${[2, 4, 8, 16][i]} g'))).toList(),
-          onChanged: (v) => setState(() => rng = v ?? 3),
-        ),
-        const SizedBox(width: 16),
-        DropdownButton<int>(
-          value: rate,
-          items: const [100, 200, 500, 1000].map((r) => DropdownMenuItem(value: r, child: Text('$r Hz'))).toList(),
-          onChanged: (v) => setState(() => rate = v ?? 200),
-        ),
-      ]),
-      Text('Soglia urto: ${shock.toStringAsFixed(1)} g'),
-      Slider(value: shock, min: 1, max: 25, divisions: 48, onChanged: (v) => setState(() => shock = v)),
-      OutlinedButton(
-        onPressed: connected
-            ? () {
-                tx([10, rng, rate & 255, rate >> 8, (shock * 10).round()]);
-                setState(() => status = 'Parametri salvati: il sensore si riavvia, riconnettiti');
-              }
-            : null,
-        child: const Text('Salva e riavvia sensore'),
-      ),
-      const Divider(),
-      const Text('File sulla microSD'),
-      OutlinedButton(
-        onPressed: connected && (flags & 1) == 0
-            ? () {
-                fmode = 'list';
-                fbytes.clear();
-                tx([7]);
-              }
-            : null,
-        child: const Text('Leggi elenco'),
-      ),
-      for (final r in files)
-        ListTile(
-          dense: true,
-          title: Text(r[0]),
-          subtitle: Text(r.length > 1 ? '${(int.tryParse(r[1]) ?? 0) ~/ 1024} KB' : ''),
-          trailing: TextButton(
-            child: const Text('Scarica'),
-            onPressed: () {
-              fmode = 'file';
-              fcur = r[0];
-              fbytes.clear();
-              setState(() => fprog = '$fcur: 0 byte');
-              tx([8, ...r[0].codeUnits]);
-            },
-          ),
-        ),
-      Text(fprog),
-      const Text('Il Bluetooth è lento: adatto a file brevi.', style: TextStyle(fontSize: 12)),
-      const Divider(),
-      const Text('Registrazione sul telefono (10 campioni/s)'),
-      Row(children: [
-        FilledButton.tonal(onPressed: connected ? toggleRecPhone : null, child: Text(recOn ? 'Ferma e condividi' : 'Avvia')),
-        const SizedBox(width: 12),
-        Text('${rec.length} campioni'),
-      ]),
-    ]);
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return DefaultTabController(
-      length: 4,
-      child: Scaffold(
-        appBar: AppBar(
-          title: const Text('Datalogger 9 assi'),
-          actions: [
-            TextButton(
-              onPressed: (connected || directMode) ? null : connectWtDirect,
-              child: const Text('WT diretto'),
-            ),
-            TextButton(
-              onPressed: (connected || directMode) ? disconnectDev : connectDev,
-              child: Text((connected || directMode) ? 'Disconnetti' : 'Connetti'),
-            ),
-          ],
-          bottom: const TabBar(tabs: [
-            Tab(text: 'Sensore'), Tab(text: 'WT1'), Tab(text: 'WT2'), Tab(text: 'Strumenti'),
-          ]),
-        ),
-        body: Column(children: [
-          Container(
-            width: double.infinity,
-            padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 12),
-            child: Text(status, style: TextStyle(color: connected ? Colors.green : null)),
-          ),
-          Expanded(child: TabBarView(children: [sensorTab(), wtTab(1), wtTab(2), toolsTab()])),
-        ]),
-      ),
-    );
-  }
+last[base + 6 + k] = s16(fr[14 + 2 * k], fr[15 + 2 * k]) / 32768.0 * 180;
 }
-
+wtCount[i]++;
+} else if (f == 0x51 || f == 0x52 || f == 0x53) {
+final scale = f == 0x51 ? 16.0 : f == 0x52 ? 2000.0 : 180.0;
+final off = f == 0x51 ? 0 : f == 0x52 ? 3 : 6;
+for (int k = 0; k < 3; k++) {
+last[base + off + k] = s16(fr[2 + 2 * k], fr[3 + 2 * k]) / 32768.0 * scale;
+}
+wtCount[i]++;
+}
+}
+}
+void onPkt(List d) {
+if (d.isEmpty) return;
+final q = d[0];
+if (q == 0) got = 0;
+if (q * 19 != got) return;
+for (int i = 1; i < d.length && got < kLen; i++) {
+asm[got++] = d[i];
+}
+if (got >= kLen) parse();
+}
+void parse() {
+final bd = ByteData.sublistView(asm);
+final v = [];
+for (int i = 0; i < 35; i++) {
+v.add(bd.getFloat32(4 + i * 4, Endian.little));
+}
+final ab = 44330.0 * (1 - math.pow(v[10] / 1013.25, 0.1903));
+alt0 ??= ab;
+lastAbs = ab;
+v.add(ab);
+flags = asm[144];
+flags2 = asm[145];
+if ((flags & 8) != 0 && (prevFlags & 8) == 0) shocks++;
+prevFlags = flags;
+buf.add(v);
+if (buf.length > kMax) buf.removeAt(0);
+last = v;
+if (recOn) {
+final t = bd.getUint32(0, Endian.little);
+final row = [t.toString()];
+for (int i = 0; i < 35; i++) {
+row.add(v[i].toStringAsFixed(3));
+}
+row.add((ab - alt0!).toStringAsFixed(2));
+rec.add(row.join(','));
+}
+}
+Future tx(List b) async {
+try {
+await cmdC?.write(b);
+} catch (e) {
+setState(() => status = 'Errore comando: $e');
+}
+}
+void onFile(List d) {
+if (d.length == 1 && d[0] == 4) {
+endFile();
+return;
+}
+fbytes.addAll(d);
+if (fmode == 'file') setState(() => fprog = '$fcur: ${fbytes.length} byte');
+}
+Future endFile() async {
+final txt = utf8.decode(fbytes, allowMalformed: true);
+final m = fmode;
+fmode = '';
+if (m == 'list') {
+final rows = txt.trim().split('\n').where((l) => l.isNotEmpty).map((l) => l.split(',')).toList();
+setState(() => files = rows);
+} else if (m == 'file') {
+await saveShare(fcur, txt);
+setState(() => fprog = '$fcur: salvato');
+}
+}
+Future saveShare(String name, String text) async {
+final dir = await getTemporaryDirectory();
+final f = File('${dir.path}/$name');
+await f.writeAsString(text);
+await Share.shareXFiles([XFile(f.path)]);
+}
+Future setClock() async {
+final now = DateTime.now();
+final e = now.millisecondsSinceEpoch ~/ 1000 + now.timeZoneOffset.inSeconds;
+await tx([4, e & 255, (e >> 8) & 255, (e >> 16) & 255, (e >> 24) & 255]);
+}
+Future toggleRecPhone() async {
+if (!recOn) {
+rec.clear();
+setState(() => recOn = true);
+} else {
+setState(() => recOn = false);
+if (rec.isNotEmpty) {
+final ts = DateTime.now().millisecondsSinceEpoch;
+await saveShare('sessione_$ts.csv', '$kHdr\n${rec.join('\n')}');
+}
+}
+}
+// ---------- interfaccia ----------
+List<List> windowData() {
+final n = windowSec * 10;
+return buf.length <= n ? buf : buf.sublist(buf.length - n);
+}
+Widget metric(String label, String value) {
+return Card(
+child: Padding(
+padding: const EdgeInsets.all(10),
+child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+Text(label, style: Theme.of(context).textTheme.bodySmall),
+const SizedBox(height: 2),
+Text(value, style: Theme.of(context).textTheme.titleMedium),
+]),
+),
+);
+}
+Widget grid(List items) {
+return GridView.count(
+crossAxisCount: 2,
+shrinkWrap: true,
+physics: const NeverScrollableScrollPhysics(),
+childAspectRatio: 2.4,
+children: items,
+);
+}
+Widget chart(ChartDef d) {
+final off = d.rel ? (alt0 ?? 0) : 0.0;
+final spans = [];
+for (int j = 0; j < d.idx.length; j++) {
+spans.add(TextSpan(
+text: '${d.names[j]} ${(last[d.idx[j]] - off).toStringAsFixed(d.dp)}  ',
+style: TextStyle(color: LinePainter.cols[d.idx.length > 1 ? j : 2], fontSize: 12),
+));
+}
+return Card(
+child: Padding(
+padding: const EdgeInsets.all(10),
+child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+Text(d.title, style: Theme.of(context).textTheme.bodySmall),
+Text.rich(TextSpan(children: spans)),
+const SizedBox(height: 4),
+SizedBox(
+height: 110,
+child: CustomPaint(
+size: Size.infinite,
+painter: LinePainter(windowData(), d.idx, off, Theme.of(context).colorScheme.outline,
+Theme.of(context).colorScheme.onSurfaceVariant),
+),
+),
+]),
+),
+);
+}
+Widget windowBar() {
+return Row(children: [
+const Text('Finestra: '),
+DropdownButton(
+value: windowSec,
+items: const [10, 30, 60, 120, 180]
+.map((s) => DropdownMenuItem(value: s, child: Text('$s s')))
+.toList(),
+onChanged: (v) => setState(() => windowSec = v ?? 30),
+),
+const Spacer(),
+TextButton(onPressed: () => setState(() => alt0 = lastAbs), child: const Text('Azzera quota')),
+]);
+}
+Widget sensorTab() {
+final sdOk = (flags & 4) != 0;
+final logging = (flags & 1) != 0;
+final bv = last[15];
+final batt = bv < 1 ? 'non misurata' : '${batPct(bv)}% (${bv.toStringAsFixed(2)} V)';
+return ListView(padding: const EdgeInsets.all(12), children: [
+if (shocks > 0) Card(color: Colors.red.shade700, child: ListTile(title: Text('Urti rilevati: $shocks', style: const TextStyle(color: Colors.white)), trailing: TextButton(onPressed: () => setState(() => shocks = 0), child: const Text('Azzera', style: TextStyle(color: Colors.white))))),
+if ((flags & 32) != 0) const Card(child: ListTile(title: Text('Batteria scarica: ricarica il sensore'))),
+grid([
+metric('Temperatura', '${last[9].toStringAsFixed(1)} °C'),
+metric('Pressione', '${last[10].toStringAsFixed(1)} hPa'),
+metric('Batteria', batt),
+metric('Quota relativa', '${(last[35] - (alt0 ?? 0)).toStringAsFixed(1)} m'),
+]),
+Card(
+child: Padding(
+padding: const EdgeInsets.all(10),
+child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+const Text('Registrazione su microSD'),
+Text(!sdOk ? 'microSD non rilevata' : logging ? 'In registrazione' : 'Ferma',
+style: TextStyle(fontWeight: FontWeight.w500, color: logging ? Colors.red : null)),
+Row(children: [
+FilledButton.tonal(onPressed: connected && sdOk && !logging ? () => tx([1]) : null, child: const Text('Avvia')),
+const SizedBox(width: 8),
+FilledButton.tonal(onPressed: connected && logging ? () => tx([0]) : null, child: const Text('Ferma')),
+const Spacer(),
+const Text('Auto'),
+Switch(value: (flags & 2) != 0, onChanged: connected ? (v) => tx([v ? 2 : 3]) : null),
+]),
+const Text('Il pulsante BOOT o il touch sul sensore avviano e fermano la registrazione anche senza telefono.',
+style: TextStyle(fontSize: 12)),
+]),
+),
+),
+windowBar(),
+for (final d in sensorCharts) chart(d),
+]);
+}
+Widget wtTab(int n) {
+final on = directMode ? wtLive[n - 1] : (n == 1 ? (flags & 128) != 0 : (flags2 & 1) != 0);
+final b = n == 1 ? 17 : 26;
+String f(int i, int dp) => last[b + i].toStringAsFixed(dp);
+return ListView(padding: const EdgeInsets.all(12), children: [
+ListTile(
+title: Text('WT9011DCL $n'),
+trailing: Text(on ? 'connesso' : 'non connesso', style: TextStyle(color: on ? Colors.green : Colors.red)),
+),
+if (directMode)
+Text('Frame ricevuti: ${wtCount[n - 1]}  ultimo pacchetto: ${wtRaw[n - 1]}', style: const TextStyle(fontSize: 11)),
+grid([
+metric('Acc X (g)', f(0, 2)), metric('Acc Y (g)', f(1, 2)), metric('Acc Z (g)', f(2, 2)),
+metric('Giro X (°/s)', f(3, 1)), metric('Giro Y (°/s)', f(4, 1)), metric('Giro Z (°/s)', f(5, 1)),
+metric('Roll (°)', f(6, 1)), metric('Pitch (°)', f(7, 1)), metric('Yaw (°)', f(8, 1)),
+]),
+windowBar(),
+for (final d in wtCharts(n)) chart(d),
+]);
+}
+Widget toolsTab() {
+return ListView(padding: const EdgeInsets.all(12), children: [
+const Text('Orologio e calibrazione'),
+Wrap(spacing: 8, children: [
+OutlinedButton(onPressed: connected ? setClock : null, child: const Text('Imposta orologio')),
+OutlinedButton(onPressed: connected ? () => tx([5]) : null, child: const Text('Calibra accel/giro')),
+OutlinedButton(onPressed: connected ? () => tx([6]) : null, child: const Text('Calibra magnetometro')),
+OutlinedButton(onPressed: connected ? () => tx([11]) : null, child: const Text('Dimentica sensori WT')),
+]),
+const Text('Accel/giro: sensore fermo e in piano. Magnetometro: ruotalo per 15 s.', style: TextStyle(fontSize: 12)),
+(flags & 64) != 0 ? const Text('Calibrazione in corso…') : const SizedBox.shrink(),
+const Divider(),
+const Text('Parametri del sensore'),
+Row(children: [
+DropdownButton(
+value: rng,
+items: const [0, 1, 2, 3].map((i) => DropdownMenuItem(value: i, child: Text('±${[2, 4, 8, 16][i]} g'))).toList(),
+onChanged: (v) => setState(() => rng = v ?? 3),
+),
+const SizedBox(width: 16),
+DropdownButton(
+value: rate,
+items: const [100, 200, 500, 1000].map((r) => DropdownMenuItem(value: r, child: Text('$r Hz'))).toList(),
+onChanged: (v) => setState(() => rate = v ?? 200),
+),
+]),
+Text('Soglia urto: ${shock.toStringAsFixed(1)} g'),
+Slider(value: shock, min: 1, max: 25, divisions: 48, onChanged: (v) => setState(() => shock = v)),
+OutlinedButton(
+onPressed: connected
+? () {
+tx([10, rng, rate & 255, rate >> 8, (shock * 10).round()]);
+setState(() => status = 'Parametri salvati: il sensore si riavvia, riconnettiti');
+}
+: null,
+child: const Text('Salva e riavvia sensore'),
+),
+const Divider(),
+const Text('File sulla microSD'),
+OutlinedButton(
+onPressed: connected && (flags & 1) == 0
+? () {
+fmode = 'list';
+fbytes.clear();
+tx([7]);
+}
+: null,
+child: const Text('Leggi elenco'),
+),
+for (final r in files)
+ListTile(
+dense: true,
+title: Text(r[0]),
+subtitle: Text(r.length > 1 ? '${(int.tryParse(r[1]) ?? 0) ~/ 1024} KB' : ''),
+trailing: TextButton(
+child: const Text('Scarica'),
+onPressed: () {
+fmode = 'file';
+fcur = r[0];
+fbytes.clear();
+setState(() => fprog = '$fcur: 0 byte');
+tx([8, ...r[0].codeUnits]);
+},
+),
+),
+Text(fprog),
+const Text('Il Bluetooth è lento: adatto a file brevi.', style: TextStyle(fontSize: 12)),
+const Divider(),
+const Text('Registrazione sul telefono (10 campioni/s)'),
+Row(children: [
+FilledButton.tonal(onPressed: connected ? toggleRecPhone : null, child: Text(recOn ? 'Ferma e condividi' : 'Avvia')),
+const SizedBox(width: 12),
+Text('${rec.length} campioni'),
+]),
+]);
+}
+@override
+Widget build(BuildContext context) {
+return DefaultTabController(
+length: 4,
+child: Scaffold(
+appBar: AppBar(
+title: const Text('Datalogger 9 assi'),
+actions: [
+TextButton(
+onPressed: (connected || directMode) ? null : connectWtDirect,
+child: const Text('WT diretto'),
+),
+TextButton(
+onPressed: (connected || directMode) ? disconnectDev : connectDev,
+child: Text((connected || directMode) ? 'Disconnetti' : 'Connetti'),
+),
+],
+bottom: const TabBar(tabs: [
+Tab(text: 'Sensore'), Tab(text: 'WT1'), Tab(text: 'WT2'), Tab(text: 'Strumenti'),
+]),
+),
+body: Column(children: [
+Container(
+width: double.infinity,
+padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 12),
+child: Text(status, style: TextStyle(color: connected ? Colors.green : null)),
+),
+Expanded(child: TabBarView(children: [sensorTab(), wtTab(1), wtTab(2), toolsTab()])),
+]),
+),
+);
+}
+}
 class LinePainter extends CustomPainter {
-  final List<List<double>> data;
-  final List<int> idx;
-  final double off;
-  final Color grid;
-  final Color textColor;
-  static const List<Color> cols = [Color(0xFFE5484D), Color(0xFF30A46C), Color(0xFF3E63DD)];
-
-  LinePainter(this.data, this.idx, this.off, this.grid, this.textColor);
-
-  @override
-  void paint(Canvas c, Size s) {
-    final border = Paint()
-      ..style = PaintingStyle.stroke
-      ..color = grid
-      ..strokeWidth = 0.5;
-    c.drawRect(Offset.zero & s, border);
-    if (data.length < 2) return;
-    double lo = double.infinity, hi = -double.infinity;
-    for (final r in data) {
-      for (final k in idx) {
-        final v = r[k] - off;
-        lo = math.min(lo, v);
-        hi = math.max(hi, v);
-      }
-    }
-    if (hi - lo < 1e-6) {
-      hi += 0.5;
-      lo -= 0.5;
-    }
-    final pad = (hi - lo) * 0.1;
-    lo -= pad;
-    hi += pad;
-    for (int j = 0; j < idx.length; j++) {
-      final p = Paint()
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 1.6
-        ..color = cols[idx.length > 1 ? j : 2];
-      final path = Path();
-      for (int i = 0; i < data.length; i++) {
-        final x = s.width * (i / (data.length - 1));
-        final y = s.height - (data[i][idx[j]] - off - lo) / (hi - lo) * s.height;
-        if (i == 0) {
-          path.moveTo(x, y);
-        } else {
-          path.lineTo(x, y);
-        }
-      }
-      c.drawPath(path, p);
-    }
-    label(c, hi.toStringAsFixed(1), const Offset(3, 2));
-    label(c, lo.toStringAsFixed(1), Offset(3, s.height - 14));
-  }
-
-  void label(Canvas c, String t, Offset o) {
-    final tp = TextPainter(
-      text: TextSpan(text: t, style: TextStyle(fontSize: 10, color: textColor)),
-      textDirection: TextDirection.ltr,
-    )..layout();
-    tp.paint(c, o);
-  }
-
-  @override
-  bool shouldRepaint(covariant LinePainter old) => true;
+final List<List> data;
+final List idx;
+final double off;
+final Color grid;
+final Color textColor;
+static const List cols = [Color(0xFFE5484D), Color(0xFF30A46C), Color(0xFF3E63DD)];
+LinePainter(this.data, this.idx, this.off, this.grid, this.textColor);
+@override
+void paint(Canvas c, Size s) {
+final border = Paint()
+..style = PaintingStyle.stroke
+..color = grid
+..strokeWidth = 0.5;
+c.drawRect(Offset.zero & s, border);
+if (data.length < 2) return;
+double lo = double.infinity, hi = -double.infinity;
+for (final r in data) {
+for (final k in idx) {
+final v = r[k] - off;
+lo = math.min(lo, v);
+hi = math.max(hi, v);
+}
+}
+if (hi - lo < 1e-6) {
+hi += 0.5;
+lo -= 0.5;
+}
+final pad = (hi - lo) * 0.1;
+lo -= pad;
+hi += pad;
+for (int j = 0; j < idx.length; j++) {
+final p = Paint()
+..style = PaintingStyle.stroke
+..strokeWidth = 1.6
+..color = cols[idx.length > 1 ? j : 2];
+final path = Path();
+for (int i = 0; i < data.length; i++) {
+final x = s.width * (i / (data.length - 1));
+final y = s.height - (data[i][idx[j]] - off - lo) / (hi - lo) * s.height;
+if (i == 0) {
+path.moveTo(x, y);
+} else {
+path.lineTo(x, y);
+}
+}
+c.drawPath(path, p);
+}
+label(c, hi.toStringAsFixed(1), const Offset(3, 2));
+label(c, lo.toStringAsFixed(1), Offset(3, s.height - 14));
+}
+void label(Canvas c, String t, Offset o) {
+final tp = TextPainter(
+text: TextSpan(text: t, style: TextStyle(fontSize: 10, color: textColor)),
+textDirection: TextDirection.ltr,
+)..layout();
+tp.paint(c, o);
+}
+@override
+bool shouldRepaint(covariant LinePainter old) => true;
 }

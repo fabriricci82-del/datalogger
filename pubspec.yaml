@@ -9,10 +9,9 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-  flutter_blue_plus: any
-  path_provider: any
-  share_plus: any
-  permission_handler: any
+  flutter_blue_plus: ^1.35.5
+  path_provider: ^2.1.5
+  share_plus: ^10.1.4
 
 dev_dependencies:
   flutter_test:
@@ -20,4 +19,3 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
-

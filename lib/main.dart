@@ -113,6 +113,7 @@ class _HomePageState extends State<HomePage> {
   int rng = 3;
   int rate = 200;
   double shock = 3;
+  // WitMotion collegati direttamente al telefono
   bool directMode = false;
   final List<bool> wtLive = [false, false];
   final List<BluetoothDevice?> wtDev = [null, null];
@@ -137,6 +138,7 @@ class _HomePageState extends State<HomePage> {
     super.dispose();
   }
 
+  // ---------- Bluetooth ----------
   Future<void> connectDev() async {
     setState(() => status = 'Ricerca…');
     try {
@@ -198,6 +200,7 @@ class _HomePageState extends State<HomePage> {
     });
   }
 
+  // ---------- WitMotion collegato direttamente al telefono ----------
   Future<void> connectWtDirect() async {
     setState(() => status = 'Ricerca WitMotion…');
     try {
@@ -252,6 +255,7 @@ class _HomePageState extends State<HomePage> {
 
   int s16(int lo, int hi) => ((hi << 8) | lo).toSigned(16);
 
+  // Pacchetti WitMotion: 0x55 0x61 (20 byte: acc, giro, angoli) oppure 0x55 0x51/0x52/0x53 (11 byte)
   void onWt(int i, List<int> v) {
     wtRaw[i] = v.map((b) => b.toRadixString(16).padLeft(2, '0')).join(' ');
     final b = wtBuf[i];
@@ -294,15 +298,14 @@ class _HomePageState extends State<HomePage> {
       asm[got++] = d[i];
     }
     if (got >= kLen) parse();
-  }
-
-  void parse() {
-    final bd = ByteData.sublistView(asm);
-    final v = <double>[];
-    for (int i = 0; i < 35; i++) {
-      v.add(bd.getFloat32(4 + i * 4, Endian.little));
-    }
-    final ab = 44330.0 * (1 - math.pow(v[10] / 1013.25, 0.1903));
+}
+void parse() {
+final bd = ByteData.sublistView(asm);
+final v = [];
+for (int i = 0; i < 35; i++) {
+v.add(bd.getFloat32(4 + i * 4, Endian.little));
+}
+final ab = 44330.0 * (1 - math.pow(v[10] / 1013.25, 0.1903));
 alt0 ??= ab;
 lastAbs = ab;
 v.add(ab);
@@ -373,6 +376,7 @@ await saveShare('sessione_$ts.csv', '$kHdr\n${rec.join('\n')}');
 }
 }
 }
+// ---------- interfaccia ----------
 List<List> windowData() {
 final n = windowSec * 10;
 return buf.length <= n ? buf : buf.sublist(buf.length - n);

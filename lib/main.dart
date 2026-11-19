@@ -9,7 +9,6 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:path_provider/path_provider.dart';
-import 'package:permission_handler/permission_handler.dart';
 import 'package:share_plus/share_plus.dart';
 
 final Guid kSvc = Guid('6e400001-b5a3-f393-e0a9-e50e24dcca9e');
@@ -114,7 +113,6 @@ class _HomePageState extends State<HomePage> {
   int rng = 3;
   int rate = 200;
   double shock = 3;
-  // WitMotion collegati direttamente al telefono
   bool directMode = false;
   final List<bool> wtLive = [false, false];
   final List<BluetoothDevice?> wtDev = [null, null];
@@ -139,26 +137,7 @@ class _HomePageState extends State<HomePage> {
     super.dispose();
   }
 
-  Future<bool> checkPerms() async {
-    if (Platform.isAndroid) {
-      final statuses = await [
-        Permission.bluetoothScan,
-        Permission.bluetoothConnect,
-        Permission.locationWhenInUse,
-      ].request();
-      final ok = statuses[Permission.bluetoothScan]?.isGranted == true &&
-          statuses[Permission.bluetoothConnect]?.isGranted == true;
-      if (!ok) {
-        setState(() => status = 'Permessi Bluetooth negati');
-        return false;
-      }
-    }
-    return true;
-  }
-
-  // ---------- Bluetooth ----------
   Future<void> connectDev() async {
-    if (!await checkPerms()) return;
     setState(() => status = 'Ricerca…');
     try {
       BluetoothDevice? found;
@@ -173,7 +152,7 @@ class _HomePageState extends State<HomePage> {
         return;
       }
       final d = found!;
-      await d.connect(license: License.free);
+      await d.connect();
       d.connectionState.listen((s) {
         if (s == BluetoothConnectionState.disconnected && mounted) {
           setState(() {
@@ -219,9 +198,7 @@ class _HomePageState extends State<HomePage> {
     });
   }
 
-  // ---------- WitMotion collegato direttamente al telefono ----------
   Future<void> connectWtDirect() async {
-    if (!await checkPerms()) return;
     setState(() => status = 'Ricerca WitMotion…');
     try {
       final found = <BluetoothDevice>[];
@@ -256,7 +233,7 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<void> attachWt(int i, BluetoothDevice d) async {
-    await d.connect(license: License.free);
+    await d.connect();
     d.connectionState.listen((st) {
       if (st == BluetoothConnectionState.disconnected && mounted) setState(() => wtLive[i] = false);
     });
@@ -275,7 +252,6 @@ class _HomePageState extends State<HomePage> {
 
   int s16(int lo, int hi) => ((hi << 8) | lo).toSigned(16);
 
-  // Pacchetti WitMotion: 0x55 0x61 (20 byte: acc, giro, angoli) oppure 0x55 0x51/0x52/0x53 (11 byte)
   void onWt(int i, List<int> v) {
     wtRaw[i] = v.map((b) => b.toRadixString(16).padLeft(2, '0')).join(' ');
     final b = wtBuf[i];
@@ -295,36 +271,38 @@ class _HomePageState extends State<HomePage> {
         for (int k = 0; k < 3; k++) {
           last[base + k] = s16(fr[2 + 2 * k], fr[3 + 2 * k]) / 32768.0 * 16;
           last[base + 3 + k] = s16(fr[8 + 2 * k], fr[9 + 2 * k]) / 32768.0 * 2000;
-last[base + 6 + k] = s16(fr[14 + 2 * k], fr[15 + 2 * k]) / 32768.0 * 180;
-}
-wtCount[i]++;
-} else if (f == 0x51 || f == 0x52 || f == 0x53) {
-final scale = f == 0x51 ? 16.0 : f == 0x52 ? 2000.0 : 180.0;
-final off = f == 0x51 ? 0 : f == 0x52 ? 3 : 6;
-for (int k = 0; k < 3; k++) {
-last[base + off + k] = s16(fr[2 + 2 * k], fr[3 + 2 * k]) / 32768.0 * scale;
-}
-wtCount[i]++;
-}
-}
-}
-void onPkt(List d) {
-if (d.isEmpty) return;
-final q = d[0];
-if (q == 0) got = 0;
-if (q * 19 != got) return;
-for (int i = 1; i < d.length && got < kLen; i++) {
-asm[got++] = d[i];
-}
-if (got >= kLen) parse();
-}
-void parse() {
-final bd = ByteData.sublistView(asm);
-final v = [];
-for (int i = 0; i < 35; i++) {
-v.add(bd.getFloat32(4 + i * 4, Endian.little));
-}
-final ab = 44330.0 * (1 - math.pow(v[10] / 1013.25, 0.1903));
+          last[base + 6 + k] = s16(fr[14 + 2 * k], fr[15 + 2 * k]) / 32768.0 * 180;
+        }
+        wtCount[i]++;
+      } else if (f == 0x51 || f == 0x52 || f == 0x53) {
+        final scale = f == 0x51 ? 16.0 : f == 0x52 ? 2000.0 : 180.0;
+        final off = f == 0x51 ? 0 : f == 0x52 ? 3 : 6;
+        for (int k = 0; k < 3; k++) {
+          last[base + off + k] = s16(fr[2 + 2 * k], fr[3 + 2 * k]) / 32768.0 * scale;
+        }
+        wtCount[i]++;
+      }
+    }
+  }
+
+  void onPkt(List<int> d) {
+    if (d.isEmpty) return;
+    final q = d[0];
+    if (q == 0) got = 0;
+    if (q * 19 != got) return;
+    for (int i = 1; i < d.length && got < kLen; i++) {
+      asm[got++] = d[i];
+    }
+    if (got >= kLen) parse();
+  }
+
+  void parse() {
+    final bd = ByteData.sublistView(asm);
+    final v = <double>[];
+    for (int i = 0; i < 35; i++) {
+      v.add(bd.getFloat32(4 + i * 4, Endian.little));
+    }
+    final ab = 44330.0 * (1 - math.pow(v[10] / 1013.25, 0.1903));
 alt0 ??= ab;
 lastAbs = ab;
 v.add(ab);
@@ -395,7 +373,6 @@ await saveShare('sessione_$ts.csv', '$kHdr\n${rec.join('\n')}');
 }
 }
 }
-// ---------- interfaccia ----------
 List<List> windowData() {
 final n = windowSec * 10;
 return buf.length <= n ? buf : buf.sublist(buf.length - n);
